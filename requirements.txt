@@ -1,4 +1,4 @@
-python-telegram-bot==21.11
+python-telegram-bot==20.7
 sqlalchemy==2.0.38
 flask[async]==3.0.0
 gigachat==0.1.0
