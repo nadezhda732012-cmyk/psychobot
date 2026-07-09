@@ -10,35 +10,26 @@ from database import init_db, clear_history
 from model import get_response
 from tests import start_test, get_next_question, save_answer, test_sessions
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Создаём Flask-приложение
 app = Flask(__name__)
 
-# Глобальная переменная для приложения Telegram
-telegram_app = None
+# --- Инициализация приложения Telegram (только один раз) ---
+telegram_app = Application.builder().token(BOT_TOKEN).build()
 
-def get_telegram_app():
-    """Создаёт или возвращает существующее приложение Telegram"""
-    global telegram_app
-    if telegram_app is None:
-        logger.info("🔄 Создание приложения Telegram...")
-        telegram_app = Application.builder().token(BOT_TOKEN).build()
-        
-        # Регистрируем обработчики
-        telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CommandHandler("help", help_command))
-        telegram_app.add_handler(CommandHandler("clear", clear))
-        telegram_app.add_handler(CommandHandler("crisis", crisis))
-        telegram_app.add_handler(CommandHandler("test", test_command))
-        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        logger.info("✅ Обработчики зарегистрированы")
-    return telegram_app
+# Регистрируем обработчики
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("help", help_command))
+telegram_app.add_handler(CommandHandler("clear", clear))
+telegram_app.add_handler(CommandHandler("crisis", crisis))
+telegram_app.add_handler(CommandHandler("test", test_command))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# --- Обработчики команд ---
+# Флаг для однократной инициализации
+initialized = False
+
+# --- Обработчики команд (без изменений) ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -89,7 +80,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text
 
-    # Проверяем, не проходит ли пользователь тест
     if user_id in test_sessions and test_sessions[user_id] is not None:
         session = test_sessions[user_id]
         if session["step"] < 7:
@@ -103,7 +93,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Тест завершён! Спасибо за ответы.")
             return
 
-    # Обычный режим чата
     try:
         await update.message.chat.send_action(action="typing")
         response = await get_response(user_id, user_message)
@@ -120,31 +109,23 @@ def home():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обрабатывает входящие обновления от Telegram"""
+    global initialized
     try:
-        # Получаем данные
         json_data = request.get_json(force=True)
         
-        # Получаем приложение Telegram
-        app_tg = get_telegram_app()
+        # Инициализируем приложение только один раз
+        if not initialized:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(telegram_app.initialize())
+            initialized = True
+            logger.info("✅ Приложение Telegram инициализировано")
+
+        update = Update.de_json(json_data, telegram_app.bot)
         
-        # Получаем бота из приложения
-        bot = app_tg.bot
-        
-        # Создаём объект Update с передачей бота
-        update = Update.de_json(json_data, bot)
-        
-        # Создаём новый event loop для этого запроса
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
-        # Инициализируем приложение, если ещё не инициализировано
-        if not hasattr(app_tg, '_initialized'):
-            loop.run_until_complete(app_tg.initialize())
-            app_tg._initialized = True
-        
-        # Обрабатываем обновление
-        loop.run_until_complete(app_tg.process_update(update))
+        loop.run_until_complete(telegram_app.process_update(update))
         
         return "ok", 200
     except Exception as e:
@@ -153,14 +134,12 @@ def webhook():
 
 @app.route('/setwebhook')
 def set_webhook():
-    """Устанавливает вебхук"""
     webhook_url = f"https://psychobot-xl1y.onrender.com/webhook"
     try:
-        app_tg = get_telegram_app()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(app_tg.initialize())
-        loop.run_until_complete(app_tg.bot.set_webhook(webhook_url))
+        loop.run_until_complete(telegram_app.initialize())
+        loop.run_until_complete(telegram_app.bot.set_webhook(webhook_url))
         return f"✅ Вебхук установлен: {webhook_url}", 200
     except Exception as e:
         return f"❌ Ошибка: {e}", 500
@@ -168,7 +147,6 @@ def set_webhook():
 # --- Запуск ---
 
 if __name__ == "__main__":
-    # Инициализируем базу данных
     init_db()
     logger.info("✅ База данных инициализирована")
     
