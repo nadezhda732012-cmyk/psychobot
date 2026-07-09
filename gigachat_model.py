@@ -7,15 +7,15 @@ logger = logging.getLogger(__name__)
 GIGACHAT_KEY = os.environ.get("GIGACHAT_KEY", "")
 
 async def get_gigachat_response(user_message: str, history: list = None) -> str:
-    """Отправляет запрос к GigaChat и возвращает ответ."""
     try:
         with GigaChat(
             credentials=GIGACHAT_KEY,
             scope="GIGACHAT_API_PERS",
             model="GigaChat:latest",
             profanity_check=False,
+            verify_ssl_certs=False,  # <--- ДОБАВЬТЕ ЭТУ СТРОЧКУ
         ) as giga:
-            messages = [{"role": "system", "content": "Ты — эмпатичный психолог."}]
+            messages = [{"role": "system", "content": "Ты — эмпатичный психолог. Отвечай на русском языке, тепло и с пониманием."}]
             if history:
                 for msg in history[-10:]:
                     role = "user" if msg.role == "user" else "assistant"
