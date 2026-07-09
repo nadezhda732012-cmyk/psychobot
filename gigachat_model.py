@@ -1,10 +1,15 @@
 import os
 import logging
+import ssl
+import certifi
 from gigachat import GigaChat
 
 logger = logging.getLogger(__name__)
 
 GIGACHAT_KEY = os.environ.get("GIGACHAT_KEY", "")
+
+# Устанавливаем путь к сертификатам для корректной работы SSL
+os.environ["SSL_CERT_FILE"] = certifi.where()
 
 async def get_gigachat_response(user_message: str, history: list = None) -> str:
     try:
@@ -13,7 +18,7 @@ async def get_gigachat_response(user_message: str, history: list = None) -> str:
             scope="GIGACHAT_API_PERS",
             model="GigaChat:latest",
             profanity_check=False,
-            verify_ssl_certs=False,  # <--- ДОБАВЬТЕ ЭТУ СТРОЧКУ
+            verify_ssl_certs=False,  # Отключаем проверку SSL для обхода ошибки
         ) as giga:
             messages = [{"role": "system", "content": "Ты — эмпатичный психолог. Отвечай на русском языке, тепло и с пониманием."}]
             if history:
