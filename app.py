@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# --- СНАЧАЛА ОПРЕДЕЛЯЕМ ВСЕ ОБРАБОТЧИКИ ---
+# --- Определяем все обработчики ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -87,8 +87,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в обработке сообщения: {e}")
         await update.message.reply_text("Произошла ошибка. Попробуй ещё раз.")
 
-# --- ТЕПЕРЬ СОЗДАЕМ ПРИЛОЖЕНИЕ И РЕГИСТРИРУЕМ ОБРАБОТЧИКИ ---
-
+# --- Создаем приложение Telegram и регистрируем обработчики ---
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 
 telegram_app.add_handler(CommandHandler("start", start))
@@ -98,8 +97,12 @@ telegram_app.add_handler(CommandHandler("crisis", crisis))
 telegram_app.add_handler(CommandHandler("test", test_command))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# Флаг для однократной инициализации
-initialized = False
+# --- Инициализация приложения Telegram при старте ---
+# Создаем event loop для инициализации
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+loop.run_until_complete(telegram_app.initialize())
+logger.info("✅ Приложение Telegram инициализировано")
 
 # --- Flask маршруты ---
 
@@ -109,20 +112,11 @@ def home():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global initialized
     try:
         json_data = request.get_json(force=True)
-        
-        # Инициализируем приложение только один раз
-        if not initialized:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(telegram_app.initialize())
-            initialized = True
-            logger.info("✅ Приложение Telegram инициализировано")
-
         update = Update.de_json(json_data, telegram_app.bot)
         
+        # Используем тот же loop для обработки
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(telegram_app.process_update(update))
