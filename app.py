@@ -15,21 +15,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# --- Инициализация приложения Telegram (только один раз) ---
-telegram_app = Application.builder().token(BOT_TOKEN).build()
-
-# Регистрируем обработчики
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CommandHandler("help", help_command))
-telegram_app.add_handler(CommandHandler("clear", clear))
-telegram_app.add_handler(CommandHandler("crisis", crisis))
-telegram_app.add_handler(CommandHandler("test", test_command))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-# Флаг для однократной инициализации
-initialized = False
-
-# --- Обработчики команд (без изменений) ---
+# --- СНАЧАЛА ОПРЕДЕЛЯЕМ ВСЕ ОБРАБОТЧИКИ ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -100,6 +86,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка в обработке сообщения: {e}")
         await update.message.reply_text("Произошла ошибка. Попробуй ещё раз.")
+
+# --- ТЕПЕРЬ СОЗДАЕМ ПРИЛОЖЕНИЕ И РЕГИСТРИРУЕМ ОБРАБОТЧИКИ ---
+
+telegram_app = Application.builder().token(BOT_TOKEN).build()
+
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("help", help_command))
+telegram_app.add_handler(CommandHandler("clear", clear))
+telegram_app.add_handler(CommandHandler("crisis", crisis))
+telegram_app.add_handler(CommandHandler("test", test_command))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+# Флаг для однократной инициализации
+initialized = False
 
 # --- Flask маршруты ---
 
