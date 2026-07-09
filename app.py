@@ -125,11 +125,14 @@ def webhook():
         # Получаем данные
         json_data = request.get_json(force=True)
         
-        # Создаём объект Update
-        update = Update.de_json(json_data, None)
-        
-        # Получаем приложение Telegram и инициализируем его
+        # Получаем приложение Telegram
         app_tg = get_telegram_app()
+        
+        # Получаем бота из приложения
+        bot = app_tg.bot
+        
+        # Создаём объект Update с передачей бота
+        update = Update.de_json(json_data, bot)
         
         # Создаём новый event loop для этого запроса
         loop = asyncio.new_event_loop()
