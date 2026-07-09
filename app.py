@@ -114,12 +114,13 @@ def home():
     return "🤖 Бот-психолог работает!"
 
 @app.route('/webhook', methods=['POST'])
-def webhook():
+async def webhook():
     """Обрабатывает входящие обновления от Telegram"""
     try:
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, telegram_app.bot)
-        telegram_app.process_update(update)
+        # Используем await для асинхронной обработки
+        await telegram_app.process_update(update)
         return "ok", 200
     except Exception as e:
         logger.error(f"Ошибка в вебхуке: {e}")
