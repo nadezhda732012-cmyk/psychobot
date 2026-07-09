@@ -1,7 +1,7 @@
 import os
 import logging
 from gigachat import GigaChat
-from gigachat.models import Chat, Message
+from gigachat.models import Chat, Messages
 
 logger = logging.getLogger(__name__)
 
@@ -18,20 +18,20 @@ async def get_gigachat_response(user_message: str, history: list = None) -> str:
         ) as giga:
             # Создаем список сообщений
             messages = [
-                Message(role="system", content="Ты — эмпатичный психолог. Отвечай на русском языке, тепло и с пониманием. Не давай диагностических заключений.")
+                {"role": "system", "content": "Ты — эмпатичный психолог. Отвечай на русском языке, тепло и с пониманием. Не давай диагностических заключений."}
             ]
             
             # Добавляем историю диалога
             if history:
                 for msg in history[-10:]:
                     role = "user" if msg.role == "user" else "assistant"
-                    messages.append(Message(role=role, content=msg.content))
+                    messages.append({"role": role, "content": msg.content})
             
             # Добавляем текущее сообщение
-            messages.append(Message(role="user", content=user_message))
+            messages.append({"role": "user", "content": user_message})
             
             # Создаем объект Chat и отправляем запрос
-            chat = Chat(messages=messages)
+            chat = Chat(messages=messages)  # Правильное использование
             response = giga.chat(chat)
             
             # Извлекаем ответ
