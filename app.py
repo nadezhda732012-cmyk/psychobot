@@ -20,7 +20,7 @@ app = Flask(__name__)
 # Создаём приложение Telegram
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 
-# --- Обработчики команд ---
+# --- Обработчики команд (они не изменились) ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -71,7 +71,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text
 
-    # Проверяем, не проходит ли пользователь тест
     if user_id in test_sessions and test_sessions[user_id] is not None:
         session = test_sessions[user_id]
         if session["step"] < 7:
@@ -85,7 +84,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Тест завершён! Спасибо за ответы.")
             return
 
-    # Обычный режим чата
     try:
         await update.message.chat.send_action(action="typing")
         response = await get_response(user_id, user_message)
@@ -102,6 +100,8 @@ telegram_app.add_handler(CommandHandler("crisis", crisis))
 telegram_app.add_handler(CommandHandler("test", test_command))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+# --- Важное изменение: инициализация и запуск ---
+
 # Инициализируем базу данных
 init_db()
 logger.info("✅ База данных инициализирована")
@@ -114,13 +114,17 @@ def home():
     return "🤖 Бот-психолог работает!"
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
-    """Обрабатывает входящие обновления от Telegram"""
+def webhook():
+    """Обрабатывает входящие обновления от Telegram (синхронная версия)"""
     try:
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, telegram_app.bot)
-        # Используем await для асинхронной обработки
-        await telegram_app.process_update(update)
+        
+        # Запускаем обработку синхронно через run_until_complete
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(telegram_app.process_update(update))
+        
         return "ok", 200
     except Exception as e:
         logger.error(f"Ошибка в вебхуке: {e}")
@@ -131,8 +135,10 @@ def set_webhook():
     """Устанавливает вебхук"""
     webhook_url = f"https://psychobot-xl1y.onrender.com/webhook"
     try:
+        # Инициализируем приложение перед установкой вебхука
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        loop.run_until_complete(telegram_app.initialize())
         loop.run_until_complete(telegram_app.bot.set_webhook(webhook_url))
         return f"✅ Вебхук установлен: {webhook_url}", 200
     except Exception as e:
