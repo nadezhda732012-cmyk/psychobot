@@ -14,6 +14,7 @@ async def get_gigachat_response(user_message: str, history: list = None) -> str:
             model="GigaChat:latest",
             profanity_check=False,
             verify_ssl_certs=False,
+            max_tokens=150,  # <--- Параметр перенесён сюда
         ) as giga:
             # Экспертный системный промпт
             messages = [
@@ -53,8 +54,8 @@ async def get_gigachat_response(user_message: str, history: list = None) -> str:
             # Добавляем текущее сообщение
             messages.append({"role": "user", "content": user_message})
             
-            # Отправляем запрос с ограничением длины (150 токенов ~ 10-15 предложений)
-            response = giga.chat(messages, max_tokens=150)
+            # Отправляем запрос (без max_tokens здесь)
+            response = giga.chat(messages)
             
             if response and response.choices:
                 return response.choices[0].message.content.strip()
