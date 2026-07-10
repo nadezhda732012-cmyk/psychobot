@@ -1,23 +1,28 @@
-import os
-import logging
 import asyncio
+import logging
+import os
+import threading
+from concurrent.futures import Future
 
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
-    MessageHandler,
     ContextTypes,
+    MessageHandler,
     filters,
 )
 
 from config import BOT_TOKEN, CRISIS_CONTACTS
-from database import init_db, clear_history
+from database import clear_history, init_db
 from model import get_response
 
 
-# Настройка логирования
+# -------------------------------------------------------------------
+# Логирование
+# -------------------------------------------------------------------
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -26,27 +31,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Flask-приложение
+# -------------------------------------------------------------------
+# Основные настройки
+# -------------------------------------------------------------------
+
 app = Flask(__name__)
 
-
-# URL, на который Telegram будет отправлять сообщения
 WEBHOOK_URL = (
     "https://psychobot-xl1y.onrender.com/webhook"
 )
 
 
 # -------------------------------------------------------------------
-# Обработчики команд Telegram
+# Обработчики Telegram
 # -------------------------------------------------------------------
 
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """
-    Обрабатывает команду /start.
-    """
+    """Обрабатывает команду /start."""
+
+    if not update.message:
+        return
 
     user = update.effective_user
 
@@ -85,9 +92,10 @@ async def help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """
-    Обрабатывает команду /help.
-    """
+    """Обрабатывает команду /help."""
+
+    if not update.message:
+        return
 
     await update.message.reply_text(
         "📋 Доступные команды:\n\n"
@@ -103,9 +111,10 @@ async def clear(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """
-    Удаляет историю сообщений текущего пользователя.
-    """
+    """Удаляет историю текущего пользователя."""
+
+    if not update.message:
+        return
 
     user = update.effective_user
 
@@ -138,9 +147,10 @@ async def crisis(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """
-    Показывает контакты экстренной помощи.
-    """
+    """Показывает контакты экстренной помощи."""
+
+    if not update.message:
+        return
 
     await update.message.reply_text(
         "☎️ Если существует непосредственная опасность "
@@ -153,18 +163,11 @@ async def crisis(
     )
 
 
-# -------------------------------------------------------------------
-# Обработка обычных текстовых сообщений
-# -------------------------------------------------------------------
-
 async def handle_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """
-    Передает обычное текстовое сообщение в модель
-    и отправляет пользователю ответ.
-    """
+    """Обрабатывает обычное текстовое сообщение."""
 
     if not update.message:
         return
@@ -208,14 +211,31 @@ async def handle_message(
             user.id,
         )
 
-        await update.message.reply_text(
-            "Произошла ошибка при обработке сообщения. "
-            "Попробуй отправить его ещё раз немного позже."
-        )
+        try:
+            await update.message.reply_text(
+                "Произошла ошибка при обработке сообщения. "
+                "Попробуй отправить его ещё раз немного позже."
+            )
+        except Exception:
+            logger.exception(
+                "Не удалось отправить сообщение об ошибке"
+            )
+
+
+async def telegram_error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Записывает необработанные ошибки Telegram."""
+
+    logger.error(
+        "Необработанная ошибка Telegram",
+        exc_info=context.error,
+    )
 
 
 # -------------------------------------------------------------------
-# Создание Telegram-приложения
+# Создание Telegram Application
 # -------------------------------------------------------------------
 
 telegram_app = (
@@ -224,38 +244,22 @@ telegram_app = (
     .build()
 )
 
-
-# Регистрация команд
 telegram_app.add_handler(
-    CommandHandler(
-        "start",
-        start,
-    )
+    CommandHandler("start", start)
 )
 
 telegram_app.add_handler(
-    CommandHandler(
-        "help",
-        help_command,
-    )
+    CommandHandler("help", help_command)
 )
 
 telegram_app.add_handler(
-    CommandHandler(
-        "clear",
-        clear,
-    )
+    CommandHandler("clear", clear)
 )
 
 telegram_app.add_handler(
-    CommandHandler(
-        "crisis",
-        crisis,
-    )
+    CommandHandler("crisis", crisis)
 )
 
-
-# Регистрация обычных текстовых сообщений
 telegram_app.add_handler(
     MessageHandler(
         filters.TEXT & ~filters.COMMAND,
@@ -263,32 +267,88 @@ telegram_app.add_handler(
     )
 )
 
-
-# -------------------------------------------------------------------
-# Инициализация Telegram Application
-# -------------------------------------------------------------------
-
-initialization_loop = asyncio.new_event_loop()
-asyncio.set_event_loop(initialization_loop)
-
-initialization_loop.run_until_complete(
-    telegram_app.initialize()
+telegram_app.add_error_handler(
+    telegram_error_handler
 )
 
-logger.info(
-    "✅ Telegram-приложение инициализировано"
+
+# -------------------------------------------------------------------
+# Один постоянный event loop для Telegram
+# -------------------------------------------------------------------
+
+telegram_loop = asyncio.new_event_loop()
+
+telegram_ready = threading.Event()
+
+
+async def initialize_telegram() -> None:
+    """
+    Инициализирует Telegram-приложение
+    внутри постоянного event loop.
+    """
+
+    await telegram_app.initialize()
+
+    logger.info(
+        "✅ Telegram-приложение инициализировано"
+    )
+
+    telegram_ready.set()
+
+
+def run_telegram_loop() -> None:
+    """
+    Запускает постоянный event loop
+    в отдельном потоке.
+    """
+
+    asyncio.set_event_loop(telegram_loop)
+
+    telegram_loop.run_until_complete(
+        initialize_telegram()
+    )
+
+    telegram_loop.run_forever()
+
+
+telegram_thread = threading.Thread(
+    target=run_telegram_loop,
+    name="telegram-event-loop",
+    daemon=True,
 )
+
+telegram_thread.start()
+
+
+# Ждём инициализации не более 30 секунд.
+if not telegram_ready.wait(timeout=30):
+    raise RuntimeError(
+        "Telegram-приложение не успело инициализироваться"
+    )
+
+
+def log_future_error(future: Future) -> None:
+    """
+    Записывает ошибку фоновой обработки webhook,
+    если она возникла.
+    """
+
+    try:
+        future.result()
+
+    except Exception:
+        logger.exception(
+            "Ошибка фоновой обработки Telegram update"
+        )
 
 
 # -------------------------------------------------------------------
 # Flask-маршруты
 # -------------------------------------------------------------------
 
-@app.route("/", methods=["GET"])
+@app.route("/", methods=["GET", "HEAD"])
 def home():
-    """
-    Проверка работы сервиса.
-    """
+    """Проверка состояния сервиса."""
 
     return "🤖 Бот работает!", 200
 
@@ -296,18 +356,21 @@ def home():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """
-    Получает обновления от Telegram.
+    Получает update от Telegram и передаёт его
+    в постоянный event loop.
     """
 
     try:
         json_data = request.get_json(
-            force=True
+            force=True,
+            silent=False,
         )
 
         if not json_data:
             logger.warning(
                 "Webhook получил пустой запрос"
             )
+
             return "empty request", 400
 
         update = Update.de_json(
@@ -315,23 +378,22 @@ def webhook():
             telegram_app.bot,
         )
 
-        webhook_loop = asyncio.new_event_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            telegram_app.process_update(update),
+            telegram_loop,
+        )
 
-        try:
-            asyncio.set_event_loop(webhook_loop)
+        future.add_done_callback(
+            log_future_error
+        )
 
-            webhook_loop.run_until_complete(
-                telegram_app.process_update(update)
-            )
-
-        finally:
-            webhook_loop.close()
-
+        # Telegram быстро получает подтверждение.
+        # Обработка сообщения продолжается в фоне.
         return "ok", 200
 
     except Exception:
         logger.exception(
-            "Ошибка при обработке Telegram webhook"
+            "Ошибка при приёме Telegram webhook"
         )
 
         return "error", 500
@@ -339,20 +401,20 @@ def webhook():
 
 @app.route("/setwebhook", methods=["GET"])
 def set_webhook():
-    """
-    Устанавливает Telegram webhook.
-    Вызывается вручную после деплоя.
-    """
-
-    webhook_loop = asyncio.new_event_loop()
+    """Устанавливает webhook Telegram."""
 
     try:
-        asyncio.set_event_loop(webhook_loop)
-
-        result = webhook_loop.run_until_complete(
+        future = asyncio.run_coroutine_threadsafe(
             telegram_app.bot.set_webhook(
                 url=WEBHOOK_URL,
-            )
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+            ),
+            telegram_loop,
+        )
+
+        result = future.result(
+            timeout=30
         )
 
         if result:
@@ -385,12 +447,9 @@ def set_webhook():
             500,
         )
 
-    finally:
-        webhook_loop.close()
-
 
 # -------------------------------------------------------------------
-# Запуск приложения
+# Запуск Flask
 # -------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -403,7 +462,7 @@ if __name__ == "__main__":
     port = int(
         os.environ.get(
             "PORT",
-            10000,
+            "10000",
         )
     )
 
@@ -415,4 +474,6 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port,
+        threaded=True,
+        use_reloader=False,
     )
