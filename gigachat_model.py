@@ -1,64 +1,62 @@
 import os
 import logging
+
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages
 
 logger = logging.getLogger(__name__)
 
-GIGACHAT_KEY = os.environ.get("GIGACHAT_KEY", "")
+GIGACHAT_KEY = os.getenv("GIGACHAT_KEY")
 
-async def get_gigachat_response(user_message: str, history: list = None) -> str:
+
+async def get_gigachat_response(user_message: str, history=None):
     try:
         with GigaChat(
             credentials=GIGACHAT_KEY,
             scope="GIGACHAT_API_PERS",
-            model="GigaChat:latest",
-            profanity_check=False,
             verify_ssl_certs=False,
+            profanity_check=False,
         ) as giga:
-            # --- РАЗВЕРНУТЫЙ ЭКСПЕРТНЫЙ ПРОМПТ ---
-            messages = [
-                {"role": "system", "content": """
-Ты — квалифицированный психолог-консультант с опытом работы в когнитивно-поведенческом подходе. Твоя задача — помогать пользователю через короткие, точные и практичные ответы.
 
-### Твои принципы:
-1. **Эмпатия без воды**: Признавай эмоции пользователя, но делай это в 1 предложении. Без общих фраз.
-2. **Конкретика**: Отвечай по существу. Если пользователь описывает ситуацию — выдели ключевую мысль или убеждение, которое стоит проверить.
-3. **Практика**: Предлагай 1 конкретный вопрос для размышления или 1 микро-действие, которое пользователь может сделать прямо сейчас.
-4. **Структура ответа** (строго 3-5 предложений):
-   - Предложение 1: Признание эмоции/ситуации (без оценок).
-   - Предложение 2: Вопрос или переформулировка мысли пользователя.
-   - Предложение 3: Конкретный вопрос или предложение действия.
-   - (Опционально) Предложение 4: Короткое поддерживающее замечание.
-   - **Важно**: Если вопрос пользователя не требует размышлений (например, приветствие или простой фактологический запрос), **ответь в 1-2 предложения**, без лишней эмпатии.
+            chat = Chat(messages=[])
 
-### Пример идеального ответа:
-Пользователь: "Я всё время откладываю дела и чувствую вину."
-Ответ: "Это похоже на ловушку перфекционизма — вы боитесь сделать неидеально. Что будет, если вы сделаете задачу 'так себе' уже сегодня? Возможно, вы обнаружите, что это лучше, чем ничего."
+            chat.messages.append(
+                Messages(
+                    role="system",
+                    content="""
+Ты — квалифицированный психолог-консультант с опытом работы в когнитивно-поведенческом подходе.
 
-### Запрещено:
-- Давать диагнозы или рекомендации по лечению.
-- Использовать общие фразы ('всё будет хорошо', 'примите себя').
-- Отвечать дольше 5 предложений.
+Отвечай кратко, по существу.
+Максимум 3–5 предложений.
+Не ставь диагнозы.
+Предлагай один практический шаг.
+"""
+                )
+            )
 
-Твоя задача — быть полезным, а не просто добрым. Говори по делу.
-"""}
-            ]
-            
             if history:
                 for msg in history[-10:]:
-                    role = "user" if msg.role == "user" else "assistant"
-                    messages.append({"role": role, "content": msg.content})
-            
-            messages.append({"role": "user", "content": user_message})
-            
-            response = giga.chat(messages)
-            
-            if response and response.choices:
+                    chat.messages.append(
+                        Messages(
+                            role=msg.role,
+                            content=msg.content
+                        )
+                    )
+
+            chat.messages.append(
+                Messages(
+                    role="user",
+                    content=user_message
+                )
+            )
+
+            response = giga.chat(chat)
+
+            if response.choices:
                 return response.choices[0].message.content.strip()
-            else:
-                return "Извините, я не смог сформулировать ответ. Попробуйте переформулировать вопрос."
-                
-    except Exception as e:
-        logger.error(f"Ошибка GigaChat: {e}")
-        return "Извините, я временно не могу ответить. Попробуйте позже."
+
+            return "Не удалось получить ответ."
+
+    except Exception:
+        logger.exception("Ошибка GigaChat")
+        return "Извините, сейчас я не могу ответить."
