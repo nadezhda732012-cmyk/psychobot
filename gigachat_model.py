@@ -1,6 +1,7 @@
 import os
 import logging
 from gigachat import GigaChat
+from gigachat.models import Chat, Messages
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +15,8 @@ async def get_gigachat_response(user_message: str, history: list = None) -> str:
             model="GigaChat:latest",
             profanity_check=False,
             verify_ssl_certs=False,
-            max_tokens=150,  # <--- Параметр перенесён сюда
         ) as giga:
-            # Экспертный системный промпт
+            # Формируем список сообщений
             messages = [
                 {"role": "system", "content": """
 Ты — квалифицированный психолог-консультант с опытом работы в когнитивно-поведенческом подходе. Твоя задача — помогать пользователю через короткие, точные и практичные ответы.
@@ -54,7 +54,7 @@ async def get_gigachat_response(user_message: str, history: list = None) -> str:
             # Добавляем текущее сообщение
             messages.append({"role": "user", "content": user_message})
             
-            # Отправляем запрос (без max_tokens здесь)
+            # Правильный вызов: передаем список словарей напрямую
             response = giga.chat(messages)
             
             if response and response.choices:
