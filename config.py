@@ -1,10 +1,16 @@
-# ⚠️ СЮДА ВСТАВЬТЕ ВАШ ТОКЕН (который дал @BotFather)
-BOT_TOKEN = "8691821994:AAHeu6yD0H1jUDj40Co7UtBbM6LCMgT_V0Y"
+import os
 
-# Контакты служб доверия
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise RuntimeError("Переменная BOT_TOKEN не установлена")
+
+
 CRISIS_CONTACTS = """
 ☎️ Единый общероссийский телефон доверия: 8-800-200-01-22
 ☎️ Телефон МЧС: 8-800-775-17-17
 """
+
 
 MAX_HISTORY_LENGTH = 20
