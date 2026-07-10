@@ -16,7 +16,7 @@ async def get_gigachat_response(user_message: str, history: list = None) -> str:
             profanity_check=False,
             verify_ssl_certs=False,
         ) as giga:
-            # Формируем список сообщений
+            # --- РАЗВЕРНУТЫЙ ЭКСПЕРТНЫЙ ПРОМПТ ---
             messages = [
                 {"role": "system", "content": """
 Ты — квалифицированный психолог-консультант с опытом работы в когнитивно-поведенческом подходе. Твоя задача — помогать пользователю через короткие, точные и практичные ответы.
@@ -45,16 +45,13 @@ async def get_gigachat_response(user_message: str, history: list = None) -> str:
 """}
             ]
             
-            # Добавляем историю диалога (не более 10 последних сообщений)
             if history:
                 for msg in history[-10:]:
                     role = "user" if msg.role == "user" else "assistant"
                     messages.append({"role": role, "content": msg.content})
             
-            # Добавляем текущее сообщение
             messages.append({"role": "user", "content": user_message})
             
-            # Правильный вызов: передаем список словарей напрямую
             response = giga.chat(messages)
             
             if response and response.choices:
