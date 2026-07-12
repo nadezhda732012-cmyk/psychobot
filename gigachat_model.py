@@ -4,7 +4,10 @@ from gigachat import GigaChat
 from gigachat.models import Chat, Messages
 
 from config import GIGACHAT_KEY
-from response_policy import ResponsePolicy, policy_to_prompt
+from response_policy import (
+    ResponsePolicy,
+    policy_to_prompt,
+)
 from router import Route
 
 
@@ -74,6 +77,14 @@ ROUTE_INSTRUCTIONS = {
 Сначала выполни эту задачу.
 Не уводи разговор в психологический анализ.
 Если запрос понятен, не задавай уточняющих вопросов.
+
+Если создаёшь сообщение или письмо:
+
+• не предполагай пол пользователя;
+• не смешивай «вы» и «ты»;
+• используй естественный язык;
+• не придумывай лишние обстоятельства;
+• не заканчивай готовый текст вопросом.
 """,
 
     Route.FACTUAL_QUESTION: """
@@ -87,8 +98,13 @@ ROUTE_INSTRUCTIONS = {
 Пользователь хочет рассмотреть решение.
 
 Не решай за него.
-Помоги увидеть главные варианты, последствия
-или недостающую информацию.
+Помоги увидеть главный конфликт, критерий,
+последствие или недостающую информацию.
+
+Не предлагай автоматически выписывать плюсы и минусы.
+Не используй выражение «истинные желания».
+Предпочитай один точный вопрос,
+который поможет определить главный критерий.
 """,
 
     Route.REFLECTION_REQUEST: """
@@ -97,13 +113,21 @@ ROUTE_INSTRUCTIONS = {
 Не навязывай готовую причину.
 Отделяй факты от предположений.
 Используй максимум одну осторожную гипотезу.
+
+Не объясняй всё детством, травмой
+или глубинными убеждениями без оснований.
 """,
 
     Route.EMOTIONAL_DISCLOSURE: """
 Пользователь рассказывает о переживаниях.
 
-Сначала коротко покажи, что понял главное.
+Сначала коротко покажи, что понял конкретный смысл.
+Не начинай ответ словами «Понимаю, как сложно».
+Не пиши универсальную фразу
+«твои чувства важны и понятны».
+
 Не торопись с советами.
+Не предлагай упражнение автоматически.
 Не перегружай человека.
 """,
 
@@ -143,6 +167,60 @@ def build_system_prompt(
     )
 
 
+def call_gigachat(
+    system_prompt: str,
+    user_message: str,
+    history=None,
+) -> str:
+    """
+    Выполняет один запрос к GigaChat.
+    """
+
+    with GigaChat(
+        credentials=GIGACHAT_KEY,
+        scope="GIGACHAT_API_PERS",
+        verify_ssl_certs=False,
+        profanity_check=False,
+    ) as giga:
+
+        chat = Chat(messages=[])
+
+        chat.messages.append(
+            Messages(
+                role="system",
+                content=system_prompt,
+            )
+        )
+
+        if history:
+            for msg in history[-10:]:
+                chat.messages.append(
+                    Messages(
+                        role=msg.role,
+                        content=msg.content,
+                    )
+                )
+
+        chat.messages.append(
+            Messages(
+                role="user",
+                content=user_message,
+            )
+        )
+
+        response = giga.chat(chat)
+
+        if response.choices:
+            answer = response.choices[0].message.content
+
+            if answer:
+                return answer.strip()
+
+        raise RuntimeError(
+            "GigaChat вернул пустой ответ"
+        )
+
+
 async def get_gigachat_response(
     user_message: str,
     history=None,
@@ -150,8 +228,7 @@ async def get_gigachat_response(
     response_policy: ResponsePolicy | None = None,
 ) -> str:
     """
-    Получает ответ GigaChat с учётом Router
-    и Response Policy Engine.
+    Создаёт первоначальный черновик ответа.
     """
 
     if response_policy is None:
@@ -160,64 +237,16 @@ async def get_gigachat_response(
         )
 
     try:
-        with GigaChat(
-            credentials=GIGACHAT_KEY,
-            scope="GIGACHAT_API_PERS",
-            verify_ssl_certs=False,
-            profanity_check=False,
-        ) as giga:
+        system_prompt = build_system_prompt(
+            route=route,
+            response_policy=response_policy,
+        )
 
-            chat = Chat(messages=[])
-
-            system_prompt = build_system_prompt(
-                route=route,
-                response_policy=response_policy,
-            )
-
-            chat.messages.append(
-                Messages(
-                    role="system",
-                    content=system_prompt,
-                )
-            )
-
-            if history:
-                for msg in history[-10:]:
-                    chat.messages.append(
-                        Messages(
-                            role=msg.role,
-                            content=msg.content,
-                        )
-                    )
-
-            chat.messages.append(
-                Messages(
-                    role="user",
-                    content=user_message,
-                )
-            )
-
-            response = giga.chat(chat)
-
-            if response.choices:
-                answer = response.choices[0].message.content
-
-                if answer:
-                    return answer.strip()
-
-            logger.warning(
-                (
-                    "GigaChat вернул пустой ответ: "
-                    "route=%s policy=%s"
-                ),
-                route.value,
-                response_policy.mode,
-            )
-
-            return (
-                "Не удалось получить ответ. "
-                "Попробуй отправить сообщение ещё раз."
-            )
+        return call_gigachat(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            history=history,
+        )
 
     except Exception:
         logger.exception(
@@ -230,3 +259,87 @@ async def get_gigachat_response(
             "Извини, сейчас я временно не могу ответить. "
             "Попробуй немного позже."
         )
+
+
+async def rewrite_gigachat_response(
+    user_message: str,
+    draft_response: str,
+    route: Route,
+    response_policy: ResponsePolicy,
+    violations: tuple[str, ...],
+) -> str:
+    """
+    Один раз переписывает ответ,
+    если Response Critic нашёл нарушения.
+    """
+
+    violations_text = "\n".join(
+        f"- {violation}"
+        for violation in violations
+    )
+
+    policy_prompt = policy_to_prompt(
+        response_policy
+    )
+
+    rewrite_system_prompt = f"""
+Ты — редактор ответа ИИ.
+
+Твоя задача — исправить черновик ответа,
+чтобы он строго соответствовал правилам.
+
+Не объясняй внесённые изменения.
+Не пиши комментарии редактора.
+Верни только готовый ответ пользователю.
+
+МАРШРУТ:
+{route.value}
+
+НАЙДЕННЫЕ НАРУШЕНИЯ:
+{violations_text}
+
+ПОЛИТИКА ОТВЕТА:
+{policy_prompt}
+
+Особенно важно:
+
+• не добавлять новые факты;
+• не предполагать пол пользователя;
+• не добавлять лишний вопрос;
+• не использовать шаблонную эмпатию;
+• не ставить диагноз;
+• не принимать решение за пользователя;
+• не делать ответ длиннее исходного без необходимости.
+""".strip()
+
+    rewrite_user_message = f"""
+ИСХОДНОЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:
+
+{user_message}
+
+ЧЕРНОВИК ОТВЕТА:
+
+{draft_response}
+
+Перепиши черновик.
+Верни только финальный ответ.
+""".strip()
+
+    try:
+        return call_gigachat(
+            system_prompt=rewrite_system_prompt,
+            user_message=rewrite_user_message,
+            history=None,
+        )
+
+    except Exception:
+        logger.exception(
+            "Ошибка переписывания ответа: route=%s violations=%s",
+            route.value,
+            violations,
+        )
+
+        # Если переписывание не удалось,
+        # возвращаем первоначальный ответ,
+        # чтобы пользователь не остался без ответа.
+        return draft_response
