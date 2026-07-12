@@ -1,6 +1,7 @@
 import re
 from dataclasses import dataclass
 
+from conversation_planner import ConversationPlan
 from response_policy import ResponsePolicy
 from router import Route
 
@@ -8,16 +9,7 @@ from router import Route
 @dataclass(frozen=True)
 class DirectorResult:
     """
-    Решение Dialogue Director.
-
-    approved:
-        Можно ли отправить ответ пользователю.
-
-    violations:
-        Какие ошибки обнаружены в ходе разговора.
-
-    rewrite_instruction:
-        Как именно нужно перестроить ответ.
+    Результат проверки направления разговора.
     """
 
     approved: bool
@@ -26,10 +18,6 @@ class DirectorResult:
 
 
 def normalize_text(text: str) -> str:
-    """
-    Нормализует текст для проверок.
-    """
-
     normalized = text.lower().replace("ё", "е")
 
     normalized = re.sub(
@@ -45,10 +33,6 @@ def contains_any(
     text: str,
     markers: tuple[str, ...],
 ) -> bool:
-    """
-    Проверяет наличие хотя бы одного маркера.
-    """
-
     return any(
         marker in text
         for marker in markers
@@ -60,14 +44,13 @@ def evaluate_dialogue_direction(
     response_text: str,
     route: Route,
     policy: ResponsePolicy,
+    conversation_plan: ConversationPlan,
 ) -> DirectorResult:
     """
-    Проверяет, соответствует ли ответ правильному
-    направлению разговора.
+    Проверяет соответствие ответа плану разговора.
 
-    Response Critic проверяет форму ответа.
-    Dialogue Director проверяет выбранное действие:
-    ответ, совет, исследование, вопрос или план.
+    Response Critic проверяет форму.
+    Dialogue Director проверяет ход и цель.
     """
 
     normalized_user = normalize_text(
@@ -81,38 +64,52 @@ def evaluate_dialogue_direction(
     violations: list[str] = []
     rewrite_rules: list[str] = []
 
+    questions_count = response_text.count("?")
+
+    if questions_count > conversation_plan.max_questions:
+        violations.append(
+            "plan_question_limit_exceeded"
+        )
+
+        rewrite_rules.append(
+            f"Оставь не более "
+            f"{conversation_plan.max_questions} вопроса."
+        )
+
     # ---------------------------------------------------------------
-    # PRACTICAL TASK
+    # Практическая задача
     # ---------------------------------------------------------------
 
     if route == Route.PRACTICAL_TASK:
-        advice_before_result_markers = (
-            "для начала подумай",
-            "сначала разберись",
-            "важно понять свои чувства",
-            "попробуй разобраться",
-            "прежде чем писать",
+        unsupported_details = (
+            "прилагаю объяснительную",
+            "объяснительная прилагается",
+            "прилагаю справку",
+            "медицинская справка",
+            "по согласованию с",
+            "замену сотрудника",
+            "замену моего присутствия",
+            "переносы задач",
+            "распределить задачи между коллегами",
+            "обсудить возможную замену",
         )
 
         if contains_any(
             normalized_response,
-            advice_before_result_markers,
+            unsupported_details,
         ):
             violations.append(
-                "practical_task_not_completed_directly"
+                "invented_practical_details"
             )
 
             rewrite_rules.append(
-                "Сразу выполни практическую задачу пользователя. "
-                "Не добавляй психологический анализ до готового результата."
+                "Удали все обстоятельства, документы и договорённости, "
+                "которых пользователь не сообщал."
             )
 
         awkward_business_markers = (
             "замена моего присутствия",
-            "замену моего присутствия",
             "переносы задач",
-            "распределить задачи между коллегами",
-            "обсудить детали и планы по замене",
             "компенсировать мое отсутствие",
             "компенсировать моё отсутствие",
         )
@@ -126,10 +123,7 @@ def evaluate_dialogue_direction(
             )
 
             rewrite_rules.append(
-                "Используй естественный деловой язык. "
-                "Для сообщения начальнику достаточно сообщить об отсутствии, "
-                "кратко извиниться за предупреждение и при необходимости "
-                "указать, что пользователь будет на связи."
+                "Используй простой и естественный деловой язык."
             )
 
         gender_markers = (
@@ -150,85 +144,104 @@ def evaluate_dialogue_direction(
             )
 
             rewrite_rules.append(
-                "Не используй формы, указывающие на пол пользователя."
+                "Используй гендерно-нейтральную формулировку."
             )
 
         if response_text.strip().endswith("?"):
             violations.append(
-                "unnecessary_follow_up_question"
+                "unnecessary_practical_question"
             )
 
             rewrite_rules.append(
-                "Верни готовый результат и не заканчивай ответ вопросом."
+                "Не заканчивай готовый практический результат вопросом."
+            )
+
+        practical_result_markers = (
+            "здравствуйте",
+            "добрый день",
+            "уважаемый",
+            "уважаемая",
+            "сегодня не смогу",
+            "сегодня я не смогу",
+        )
+
+        if not contains_any(
+            normalized_response,
+            practical_result_markers,
+        ):
+            violations.append(
+                "missing_ready_practical_result"
+            )
+
+            rewrite_rules.append(
+                "Верни готовый текст, который можно сразу отправить."
             )
 
     # ---------------------------------------------------------------
-    # EMOTIONAL DISCLOSURE
+    # Эмоциональное сообщение
     # ---------------------------------------------------------------
 
     if route == Route.EMOTIONAL_DISCLOSURE:
-        generic_validation_markers = (
+        generic_validation = (
+            "понятно, ситуация непростая",
             "твое беспокойство понятно",
             "твоё беспокойство понятно",
             "твои переживания понятны",
             "твои чувства важны",
             "это естественно",
-            "это совершенно нормально",
+            "это нормально",
             "понимаю, как сложно",
-            "понимаю, что тебе сложно",
         )
 
         if contains_any(
             normalized_response,
-            generic_validation_markers,
+            generic_validation,
         ):
             violations.append(
-                "generic_emotional_validation"
+                "generic_emotional_opening"
             )
 
             rewrite_rules.append(
-                "Замени общую шаблонную поддержку на короткое отражение "
-                "конкретного смысла сообщения пользователя."
+                "Замени общее вступление на отражение конкретного "
+                "смысла сообщения пользователя."
             )
 
-        premature_advice_markers = (
-            "важно позволить себе",
-            "стоит заранее",
-            "попробуй",
+        advice_markers = (
             "тебе нужно",
+            "вам нужно",
+            "попробуй",
+            "попробуйте",
+            "стоит заранее",
+            "важно позволить себе",
             "следует",
-            "лучше",
             "необходимо",
+            "лучше",
             "подготовиться морально",
             "подготовиться физически",
-            "продумать, как ты будешь справляться",
-            "продумать как ты будешь справляться",
         )
 
         if contains_any(
             normalized_response,
-            premature_advice_markers,
+            advice_markers,
         ):
             violations.append(
-                "premature_emotional_advice"
+                "advice_before_emotional_clarification"
             )
 
             rewrite_rules.append(
-                "Не давай советов и не предлагай подготовку. "
-                "Сначала помоги уточнить, чего именно боится пользователь."
+                "Удали советы. Сейчас задача — уточнить источник переживания."
             )
 
         if "?" not in response_text:
             violations.append(
-                "missing_specific_exploration"
+                "missing_emotional_question"
             )
 
             rewrite_rules.append(
-                "Задай один конкретный вопрос, который поможет понять, "
-                "что именно пугает пользователя."
+                "Добавь один конкретный вопрос об источнике переживания."
             )
 
-        vague_question_markers = (
+        vague_questions = (
             "что тебя тревожит",
             "что тебя беспокоит",
             "можешь рассказать подробнее",
@@ -237,47 +250,45 @@ def evaluate_dialogue_direction(
 
         if contains_any(
             normalized_response,
-            vague_question_markers,
+            vague_questions,
         ):
             violations.append(
-                "question_too_vague"
+                "emotional_question_too_vague"
             )
 
             rewrite_rules.append(
-                "Сделай вопрос конкретнее. Например, помоги различить: "
-                "пугает определённый человек, ожидаемая ситуация "
-                "или само возвращение на работу."
+                "Уточни вопрос: речь о конкретном человеке, "
+                "ожидаемой ситуации или самом возвращении."
             )
 
     # ---------------------------------------------------------------
-    # DECISION SUPPORT
+    # Принятие решения
     # ---------------------------------------------------------------
 
     if route == Route.DECISION_SUPPORT:
-        generic_decision_markers = (
+        generic_decision_methods = (
             "плюсы и минусы",
             "за и против",
             "прислушайся к себе",
             "истинные желания",
-            "внутреннее состояние",
+            "выпиши",
+            "составь список",
             "хорошо подумай",
             "взвесь все",
             "взвесь всё",
-            "подумай о причинах",
         )
 
         if contains_any(
             normalized_response,
-            generic_decision_markers,
+            generic_decision_methods,
         ):
             violations.append(
                 "generic_decision_method"
             )
 
             rewrite_rules.append(
-                "Не предлагай список плюсов и минусов и не давай "
-                "универсальное домашнее задание. "
-                "Помоги определить один главный критерий выбора."
+                "Удали универсальное упражнение. "
+                "Сосредоточься на одном критерии выбора."
             )
 
         if "?" not in response_text:
@@ -286,24 +297,26 @@ def evaluate_dialogue_direction(
             )
 
             rewrite_rules.append(
-                "Задай один точный вопрос о главном критерии решения."
+                "Задай один вопрос о главном критерии решения."
             )
 
-        decision_question_markers = (
+        focused_question_markers = (
             "что должно измениться",
             "что удерживает",
+            "что подталкивает",
             "что заставляет остаться",
             "что заставляет уйти",
-            "какая причина",
-            "какой фактор",
             "какое условие",
+            "какой фактор",
+            "что будет тяжелее",
+            "что для тебя тяжелее",
         )
 
         if (
             "?" in response_text
             and not contains_any(
                 normalized_response,
-                decision_question_markers,
+                focused_question_markers,
             )
         ):
             violations.append(
@@ -311,18 +324,18 @@ def evaluate_dialogue_direction(
             )
 
             rewrite_rules.append(
-                "Вопрос должен выявлять главный критерий: "
-                "что удерживает пользователя, что подталкивает уйти "
-                "или что должно измениться, чтобы остаться."
+                "Сформулируй вопрос вокруг одного критерия: "
+                "что удерживает, что подталкивает уйти "
+                "или что должно измениться."
             )
 
         decision_commands = (
             "увольняйся",
             "оставайся",
-            "тебе нужно уйти",
-            "тебе нужно остаться",
             "лучше уволиться",
             "лучше остаться",
+            "тебе нужно уйти",
+            "тебе нужно остаться",
         )
 
         if contains_any(
@@ -338,7 +351,7 @@ def evaluate_dialogue_direction(
             )
 
     # ---------------------------------------------------------------
-    # REFLECTION REQUEST
+    # Запрос на саморефлексию
     # ---------------------------------------------------------------
 
     if route == Route.REFLECTION_REQUEST:
@@ -347,8 +360,6 @@ def evaluate_dialogue_direction(
             "это из-за детства",
             "у тебя травма",
             "на самом деле ты",
-            "ты боишься близости",
-            "ты боишься отвержения",
             "ты всегда",
             "причина заключается в",
         )
@@ -362,85 +373,53 @@ def evaluate_dialogue_direction(
             )
 
             rewrite_rules.append(
-                "Не сообщай готовую психологическую причину. "
-                "Представь её как одну возможную гипотезу "
-                "или задай один проверяющий вопрос."
-            )
-
-        if response_text.count("?") > 1:
-            violations.append(
-                "too_many_reflection_questions"
-            )
-
-            rewrite_rules.append(
-                "Оставь только один наиболее полезный вопрос."
+                "Замени готовый вывод на одну осторожную гипотезу "
+                "или один проверяющий вопрос."
             )
 
     # ---------------------------------------------------------------
-    # ACKNOWLEDGEMENT
+    # Короткое подтверждение
     # ---------------------------------------------------------------
 
     if route == Route.ACKNOWLEDGEMENT:
-        short_word_analysis_markers = (
+        overinterpretation_markers = (
             "ты подчеркиваешь",
             "ты подчёркиваешь",
             "интонация",
             "это свидетельствует",
-            "это говорит о",
-            "эмоции особенно интенсивны",
             "дважды подтверждаешь",
+            "эмоции особенно интенсивны",
         )
 
         if contains_any(
             normalized_response,
-            short_word_analysis_markers,
+            overinterpretation_markers,
         ):
             violations.append(
-                "short_reply_overinterpreted"
+                "acknowledgement_overinterpreted"
             )
 
             rewrite_rules.append(
                 "Не анализируй короткое слово. "
-                "Продолжи предыдущую тему естественно и кратко."
+                "Продолжи предыдущую тему."
             )
 
     # ---------------------------------------------------------------
-    # Общая проверка соответствия пользовательскому запросу
+    # Общая проверка плана
     # ---------------------------------------------------------------
 
-    if route == Route.PRACTICAL_TASK:
-        practical_user_markers = (
-            "напиши",
-            "составь",
-            "перепиши",
-            "помоги написать",
+    if (
+        conversation_plan.should_answer_directly
+        and route == Route.PRACTICAL_TASK
+        and len(normalized_response) < 15
+    ):
+        violations.append(
+            "direct_result_missing"
         )
 
-        if contains_any(
-            normalized_user,
-            practical_user_markers,
-        ):
-            result_markers = (
-                "здравствуйте",
-                "добрый день",
-                "уважаемый",
-                "уважаемая",
-                ">",
-                "«",
-            )
-
-            if not contains_any(
-                normalized_response,
-                result_markers,
-            ):
-                violations.append(
-                    "missing_practical_result"
-                )
-
-                rewrite_rules.append(
-                    "Верни готовый текст, который пользователь сможет "
-                    "сразу скопировать и отправить."
-                )
+        rewrite_rules.append(
+            "Дай полноценный готовый результат."
+        )
 
     unique_violations = tuple(
         dict.fromkeys(violations)
