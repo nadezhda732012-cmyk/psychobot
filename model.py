@@ -1,6 +1,7 @@
 import logging
 
 from config import CRISIS_CONTACTS, MAX_HISTORY_LENGTH
+from conversation_planner import build_conversation_plan
 from database import get_history, save_message
 from dialogue_director import evaluate_dialogue_direction
 from gigachat_model import (
@@ -24,7 +25,7 @@ def get_direct_response(
     has_history: bool,
 ) -> str | None:
     """
-    Возвращает простой ответ без обращения к модели.
+    Возвращает простой ответ без GigaChat.
     """
 
     route = router_result.route
@@ -71,15 +72,15 @@ async def get_response(
     user_message: str,
 ) -> str:
     """
-    Полный цикл обработки:
+    Полный цикл:
 
     Router
+    → Conversation Planner
     → Response Policy
-    → GigaChat Draft
+    → GigaChat
     → Response Critic
     → Dialogue Director
-    → одно переписывание при необходимости
-    → финальный ответ.
+    → при необходимости одно переписывание.
     """
 
     history = get_history(
@@ -94,20 +95,26 @@ async def get_response(
         has_history=has_history,
     )
 
+    conversation_plan = build_conversation_plan(
+        route=router_result.route,
+        user_message=user_message,
+        has_history=has_history,
+    )
+
     response_policy = get_response_policy(
         router_result.route
     )
 
     logger.info(
         (
-            "Router: user_id=%s route=%s confidence=%.2f "
-            "policy=%s reason=%s"
+            "Pipeline: user_id=%s route=%s "
+            "plan=%s confidence=%.2f policy=%s"
         ),
         user_id,
         router_result.route.value,
+        conversation_plan.action,
         router_result.confidence,
         response_policy.mode,
-        router_result.reason,
     )
 
     save_message(
@@ -154,32 +161,17 @@ async def get_response(
 
     selected_history = (
         history
-        if router_result.needs_history
+        if conversation_plan.should_use_history
         else None
     )
 
-    try:
-        draft_response = await get_gigachat_response(
-            user_message=user_message,
-            history=selected_history,
-            route=router_result.route,
-            response_policy=response_policy,
-        )
-
-    except Exception:
-        logger.exception(
-            "Ошибка создания ответа: user_id=%s",
-            user_id,
-        )
-
-        draft_response = (
-            "Извини, сейчас я временно не могу ответить. "
-            "Попробуй немного позже."
-        )
-
-    # ---------------------------------------------------------------
-    # Response Critic
-    # ---------------------------------------------------------------
+    draft_response = await get_gigachat_response(
+        user_message=user_message,
+        history=selected_history,
+        route=router_result.route,
+        response_policy=response_policy,
+        conversation_plan=conversation_plan,
+    )
 
     critic_result = evaluate_response(
         response_text=draft_response,
@@ -187,32 +179,28 @@ async def get_response(
         policy=response_policy,
     )
 
-    # ---------------------------------------------------------------
-    # Dialogue Director
-    # ---------------------------------------------------------------
-
     director_result = evaluate_dialogue_direction(
         user_message=user_message,
         response_text=draft_response,
         route=router_result.route,
         policy=response_policy,
+        conversation_plan=conversation_plan,
     )
 
     final_response = draft_response
 
-    needs_rewrite = (
+    if (
         not critic_result.passed
         or not director_result.approved
-    )
-
-    if needs_rewrite:
+    ):
         logger.info(
             (
                 "Response rewrite: user_id=%s route=%s "
-                "critic=%s director=%s"
+                "plan=%s critic=%s director=%s"
             ),
             user_id,
             router_result.route.value,
+            conversation_plan.action,
             critic_result.violations,
             director_result.violations,
         )
@@ -222,13 +210,14 @@ async def get_response(
             draft_response=draft_response,
             route=router_result.route,
             response_policy=response_policy,
+            conversation_plan=conversation_plan,
             critic_violations=critic_result.violations,
             director_violations=director_result.violations,
-            director_instruction=director_result.rewrite_instruction,
+            director_instruction=(
+                director_result.rewrite_instruction
+            ),
         )
 
-        # После переписывания только проверяем.
-        # Второго запроса к модели не делаем.
         second_critic = evaluate_response(
             response_text=final_response,
             route=router_result.route,
@@ -240,6 +229,7 @@ async def get_response(
             response_text=final_response,
             route=router_result.route,
             policy=response_policy,
+            conversation_plan=conversation_plan,
         )
 
         if (
@@ -248,8 +238,8 @@ async def get_response(
         ):
             logger.warning(
                 (
-                    "Final response still has violations: "
-                    "user_id=%s route=%s critic=%s director=%s"
+                    "Final violations: user_id=%s route=%s "
+                    "critic=%s director=%s"
                 ),
                 user_id,
                 router_result.route.value,
