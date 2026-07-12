@@ -4,6 +4,10 @@ from gigachat import GigaChat
 from gigachat.models import Chat, Messages
 
 from config import GIGACHAT_KEY
+from conversation_planner import (
+    ConversationPlan,
+    plan_to_prompt,
+)
 from response_policy import (
     ResponsePolicy,
     policy_to_prompt,
@@ -46,89 +50,57 @@ BASE_SYSTEM_PROMPT = """
 • «одна из возможных версий».
 
 Не используй мотивационные клише.
-
 Не изображай человеческую привязанность или эмоции.
 
-Отвечай на реальный запрос пользователя.
-Не добавляй психологический анализ, если он не нужен.
+Выполняй только один шаг разговора,
+который указан в Conversation Plan.
 """
 
 
 ROUTE_INSTRUCTIONS = {
     Route.ACKNOWLEDGEMENT: """
-Пользователь отправил короткое подтверждение или отрицание.
-
 Используй предыдущий контекст.
-Не анализируй само короткое слово.
-Не делай выводов об интонации или личности.
+Не анализируй короткое слово.
 """,
 
     Route.PRACTICAL_TASK: """
-Пользователь просит выполнить конкретную задачу.
+Верни готовый результат.
 
-Сначала выполни задачу.
-Не уводи разговор в психологический анализ.
-Если запрос понятен, не задавай уточняющих вопросов.
+Не добавляй факты, документы, причины,
+договорённости или действия,
+которых пользователь не сообщал.
 
-Если создаёшь сообщение или письмо:
-
-• верни готовый текст;
-• не предполагай пол пользователя;
-• не смешивай «вы» и «ты»;
-• используй естественный язык;
-• не придумывай лишние обстоятельства;
-• не заканчивай ответ вопросом.
+Не предполагай пол пользователя.
+Не заканчивай ответ вопросом.
 """,
 
     Route.FACTUAL_QUESTION: """
-Пользователь задаёт информационный вопрос.
-
 Ответь прямо и по существу.
 Не превращай ответ в психологическую консультацию.
 """,
 
     Route.DECISION_SUPPORT: """
-Пользователь хочет рассмотреть решение.
-
-Не решай за него.
-Не предлагай автоматически плюсы и минусы.
-Не давай универсальное домашнее задание.
-
-Помоги определить один главный критерий:
-
-• что удерживает пользователя;
-• что подталкивает уйти;
-• что должно измениться, чтобы остаться.
-
-Задай максимум один точный вопрос.
+Не решай за пользователя.
+Не предлагай плюсы и минусы.
+Определи один главный критерий выбора.
 """,
 
     Route.REFLECTION_REQUEST: """
-Пользователь явно хочет лучше понять себя.
-
-Не навязывай готовую причину.
-Отделяй факты от предположений.
-Используй максимум одну осторожную гипотезу.
-Не объясняй всё детством или травмой без оснований.
+Не навязывай готовую психологическую причину.
+Используй одну осторожную гипотезу
+или один проверяющий вопрос.
 """,
 
     Route.EMOTIONAL_DISCLOSURE: """
-Пользователь рассказывает о переживаниях.
-
-Коротко отрази конкретный смысл его сообщения.
-Не используй шаблонную валидацию.
 Не давай советов.
-Не предлагай упражнения.
-
-Задай один конкретный вопрос, который поможет понять,
-чего именно человек боится или что оказалось самым тяжёлым.
+Не предлагай упражнений.
+Коротко отрази конкретный смысл
+и задай один конкретный вопрос.
 """,
 
     Route.GENERAL: """
-Ответь на реальное сообщение пользователя.
-
-Если запрос понятен, ответь прямо.
-Не придумывай скрытые эмоции и причины.
+Ответь на реальный запрос
+без лишней психологизации.
 """,
 }
 
@@ -136,10 +108,10 @@ ROUTE_INSTRUCTIONS = {
 def build_system_prompt(
     route: Route,
     response_policy: ResponsePolicy,
+    conversation_plan: ConversationPlan,
 ) -> str:
     """
-    Объединяет базовый промпт,
-    инструкцию маршрута и Response Policy.
+    Создаёт полный системный промпт.
     """
 
     route_instruction = ROUTE_INSTRUCTIONS.get(
@@ -151,10 +123,16 @@ def build_system_prompt(
         response_policy
     )
 
+    plan_instruction = plan_to_prompt(
+        conversation_plan
+    )
+
     return (
         BASE_SYSTEM_PROMPT.strip()
         + "\n\n"
         + route_instruction.strip()
+        + "\n\n"
+        + plan_instruction.strip()
         + "\n\n"
         + policy_instruction.strip()
     )
@@ -166,7 +144,7 @@ def call_gigachat(
     history=None,
 ) -> str:
     """
-    Выполняет запрос к GigaChat.
+    Выполняет один запрос к GigaChat.
     """
 
     with GigaChat(
@@ -219,9 +197,11 @@ async def get_gigachat_response(
     history=None,
     route: Route = Route.GENERAL,
     response_policy: ResponsePolicy | None = None,
+    conversation_plan: ConversationPlan | None = None,
 ) -> str:
     """
-    Создаёт первоначальный черновик ответа.
+    Создаёт черновик на основании
+    маршрута, политики и плана.
     """
 
     if response_policy is None:
@@ -229,10 +209,16 @@ async def get_gigachat_response(
             "response_policy обязателен"
         )
 
+    if conversation_plan is None:
+        raise ValueError(
+            "conversation_plan обязателен"
+        )
+
     try:
         system_prompt = build_system_prompt(
             route=route,
             response_policy=response_policy,
+            conversation_plan=conversation_plan,
         )
 
         return call_gigachat(
@@ -243,9 +229,9 @@ async def get_gigachat_response(
 
     except Exception:
         logger.exception(
-            "Ошибка GigaChat: route=%s policy=%s",
+            "Ошибка GigaChat: route=%s plan=%s",
             route.value,
-            response_policy.mode,
+            conversation_plan.action,
         )
 
         return (
@@ -259,13 +245,13 @@ async def rewrite_gigachat_response(
     draft_response: str,
     route: Route,
     response_policy: ResponsePolicy,
+    conversation_plan: ConversationPlan,
     critic_violations: tuple[str, ...],
     director_violations: tuple[str, ...],
     director_instruction: str,
 ) -> str:
     """
-    Переписывает ответ один раз с учётом
-    Response Critic и Dialogue Director.
+    Один раз переписывает ответ.
     """
 
     critic_text = "\n".join(
@@ -278,26 +264,20 @@ async def rewrite_gigachat_response(
         for violation in director_violations
     )
 
-    policy_prompt = policy_to_prompt(
-        response_policy
-    )
-
     rewrite_system_prompt = f"""
-Ты — финальный редактор ответа ИИ.
+Ты — финальный редактор ответа.
 
-Перепиши черновик так, чтобы он строго соответствовал:
-
-1. маршруту разговора;
-2. политике ответа;
-3. замечаниям Response Critic;
-4. решению Dialogue Director.
-
+Верни только готовый ответ пользователю.
 Не объясняй изменения.
-Не пиши комментарии редактора.
-Верни только финальный ответ пользователю.
 
 МАРШРУТ:
 {route.value}
+
+CONVERSATION PLAN:
+{plan_to_prompt(conversation_plan)}
+
+RESPONSE POLICY:
+{policy_to_prompt(response_policy)}
 
 НАРУШЕНИЯ RESPONSE CRITIC:
 {critic_text or "- нет"}
@@ -305,22 +285,12 @@ async def rewrite_gigachat_response(
 НАРУШЕНИЯ DIALOGUE DIRECTOR:
 {director_text or "- нет"}
 
-КАК НУЖНО ИЗМЕНИТЬ ХОД ОТВЕТА:
+ОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ:
 {director_instruction or "- сохранить текущий ход"}
 
-ПОЛИТИКА ОТВЕТА:
-{policy_prompt}
-
-ОБЯЗАТЕЛЬНО:
-
-• отвечай на реальный запрос;
-• не добавляй новых фактов;
-• не предполагай пол пользователя;
-• не используй шаблонную эмпатию;
-• не давай совет раньше времени;
-• не добавляй ненужный вопрос;
-• не принимай решение за пользователя;
-• не делай ответ длиннее без необходимости.
+Не добавляй новых фактов.
+Не меняй цель Conversation Plan.
+Выполни только один указанный шаг.
 """.strip()
 
     rewrite_user_message = f"""
