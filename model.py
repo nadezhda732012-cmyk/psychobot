@@ -2,9 +2,17 @@ import logging
 
 from config import CRISIS_CONTACTS, MAX_HISTORY_LENGTH
 from database import get_history, save_message
-from gigachat_model import get_gigachat_response
+from gigachat_model import (
+    get_gigachat_response,
+    rewrite_gigachat_response,
+)
+from response_critic import evaluate_response
 from response_policy import get_response_policy
-from router import Route, RouterResult, classify_message
+from router import (
+    Route,
+    RouterResult,
+    classify_message,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -33,7 +41,10 @@ def get_direct_response(
     if route == Route.GOODBYE:
         return "До встречи. Береги себя."
 
-    if route == Route.ACKNOWLEDGEMENT and not has_history:
+    if (
+        route == Route.ACKNOWLEDGEMENT
+        and not has_history
+    ):
         return "Хорошо."
 
     return None
@@ -62,16 +73,28 @@ async def get_response(
     user_message: str,
 ) -> str:
     """
-    Классифицирует сообщение, выбирает политику ответа,
-    получает результат и сохраняет историю.
+    Обрабатывает сообщение по цепочке:
+
+    Router
+    → Response Policy
+    → GigaChat Draft
+    → Response Critic
+    → при необходимости одно переписывание
+    → сохранение ответа.
     """
 
+    # Историю получаем до сохранения нового сообщения,
+    # чтобы сообщение не передавалось модели дважды.
     history = get_history(
         user_id,
         MAX_HISTORY_LENGTH,
     )
 
     has_history = bool(history)
+
+    # ---------------------------------------------------------------
+    # Router
+    # ---------------------------------------------------------------
 
     router_result = classify_message(
         text=user_message,
@@ -94,11 +117,16 @@ async def get_response(
         router_result.reason,
     )
 
+    # Сохраняем сообщение пользователя.
     save_message(
         user_id,
         "user",
         user_message,
     )
+
+    # ---------------------------------------------------------------
+    # Временный кризисный маршрут
+    # ---------------------------------------------------------------
 
     if router_result.route == Route.CRISIS_SIGNAL:
         crisis_response = build_crisis_response()
@@ -110,6 +138,10 @@ async def get_response(
         )
 
         return crisis_response
+
+    # ---------------------------------------------------------------
+    # Простые ответы без GigaChat
+    # ---------------------------------------------------------------
 
     direct_response = get_direct_response(
         router_result=router_result,
@@ -142,8 +174,12 @@ async def get_response(
         else None
     )
 
+    # ---------------------------------------------------------------
+    # Создание черновика
+    # ---------------------------------------------------------------
+
     try:
-        bot_response = await get_gigachat_response(
+        draft_response = await get_gigachat_response(
             user_message=user_message,
             history=selected_history,
             route=router_result.route,
@@ -152,21 +188,78 @@ async def get_response(
 
     except Exception:
         logger.exception(
-            "Ошибка ответа: user_id=%s route=%s policy=%s",
+            (
+                "Ошибка создания ответа: "
+                "user_id=%s route=%s policy=%s"
+            ),
             user_id,
             router_result.route.value,
             response_policy.mode,
         )
 
-        bot_response = (
+        draft_response = (
             "Извини, сейчас я временно не могу ответить. "
             "Попробуй немного позже."
         )
 
+    # ---------------------------------------------------------------
+    # Response Critic
+    # ---------------------------------------------------------------
+
+    critic_result = evaluate_response(
+        response_text=draft_response,
+        route=router_result.route,
+        policy=response_policy,
+    )
+
+    final_response = draft_response
+
+    if not critic_result.passed:
+        logger.info(
+            (
+                "Response Critic: user_id=%s route=%s "
+                "violations=%s"
+            ),
+            user_id,
+            router_result.route.value,
+            critic_result.violations,
+        )
+
+        final_response = await rewrite_gigachat_response(
+            user_message=user_message,
+            draft_response=draft_response,
+            route=router_result.route,
+            response_policy=response_policy,
+            violations=critic_result.violations,
+        )
+
+        # Повторно проверяем переписанный ответ,
+        # но второй раз модель уже не вызываем.
+        second_critic_result = evaluate_response(
+            response_text=final_response,
+            route=router_result.route,
+            policy=response_policy,
+        )
+
+        if not second_critic_result.passed:
+            logger.warning(
+                (
+                    "Response Critic after rewrite: "
+                    "user_id=%s route=%s violations=%s"
+                ),
+                user_id,
+                router_result.route.value,
+                second_critic_result.violations,
+            )
+
+    # ---------------------------------------------------------------
+    # Сохранение финального ответа
+    # ---------------------------------------------------------------
+
     save_message(
         user_id,
         "assistant",
-        bot_response,
+        final_response,
     )
 
-    return bot_response
+    return final_response
