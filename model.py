@@ -25,7 +25,8 @@ def get_direct_response(
     has_history: bool,
 ) -> str | None:
     """
-    Возвращает простой ответ без GigaChat.
+    Возвращает простой предсказуемый ответ
+    без обращения к GigaChat.
     """
 
     route = router_result.route
@@ -54,6 +55,9 @@ def get_direct_response(
 def build_crisis_response() -> str:
     """
     Временный кризисный ответ.
+
+    Позже эта часть будет заменена полноценным
+    Safety Engine.
     """
 
     return (
@@ -67,20 +71,142 @@ def build_crisis_response() -> str:
     )
 
 
+def normalize_text(text: str) -> str:
+    """
+    Нормализует текст для простых проверок.
+    """
+
+    return (
+        text.lower()
+        .replace("ё", "е")
+        .strip()
+    )
+
+
+def build_safe_fallback(
+    route: Route,
+    user_message: str,
+) -> str:
+    """
+    Возвращает заранее проверенный ответ,
+    если черновик и его переписанная версия
+    не прошли проверку.
+
+    Этот слой не использует языковую модель,
+    поэтому не может добавить новые факты.
+    """
+
+    normalized_message = normalize_text(
+        user_message
+    )
+
+    if route == Route.EMOTIONAL_DISCLOSURE:
+        if (
+            "работ" in normalized_message
+            and (
+                "страшно" in normalized_message
+                or "боюсь" in normalized_message
+            )
+        ):
+            return (
+                "Похоже, сама мысль о возвращении на работу "
+                "уже вызывает напряжение. "
+                "Что пугает сильнее всего: конкретный человек, "
+                "возможная ситуация или сама необходимость туда идти?"
+            )
+
+        return (
+            "Похоже, эта ситуация вызывает у тебя сильное напряжение. "
+            "Что именно сейчас ощущается самым тяжёлым?"
+        )
+
+    if route == Route.DECISION_SUPPORT:
+        if (
+            "уволь" in normalized_message
+            or "работ" in normalized_message
+        ):
+            return (
+                "Похоже, у желания уйти и причин остаться "
+                "есть для тебя весомые основания. "
+                "Что должно измениться на этой работе, "
+                "чтобы ты действительно захотела остаться?"
+            )
+
+        return (
+            "Похоже, в этом выборе сталкиваются "
+            "две важные для тебя причины. "
+            "Какое условие сильнее всего повлияет на решение?"
+        )
+
+    if route == Route.REFLECTION_REQUEST:
+        return (
+            "Здесь может быть несколько объяснений, "
+            "и я не хочу выбирать одно слишком быстро. "
+            "Что обычно происходит прямо перед тем, "
+            "как ты начинаешь реагировать таким образом?"
+        )
+
+    if route == Route.PRACTICAL_TASK:
+        is_message_to_boss = (
+            "начальник" in normalized_message
+            or "руководител" in normalized_message
+        )
+
+        is_absence_message = (
+            "не выйду" in normalized_message
+            or "не смогу выйти" in normalized_message
+            or "не приду" in normalized_message
+        )
+
+        if is_message_to_boss and is_absence_message:
+            return (
+                "Здравствуйте, [Имя Отчество].\n\n"
+                "Сегодня я не смогу выйти на работу "
+                "по личным обстоятельствам. "
+                "Прошу прощения за позднее предупреждение.\n\n"
+                "С уважением,\n"
+                "[Имя]"
+            )
+
+        return (
+            "Не удалось надёжно сформировать готовый текст "
+            "без риска добавить лишние детали. "
+            "Напиши, кому предназначено сообщение "
+            "и что именно в нём нужно сообщить."
+        )
+
+    if route == Route.FACTUAL_QUESTION:
+        return (
+            "Сейчас мне не удалось сформировать "
+            "достаточно надёжный ответ. "
+            "Попробуй немного уточнить вопрос."
+        )
+
+    if route == Route.ACKNOWLEDGEMENT:
+        return "Хорошо, продолжим с этого места."
+
+    return (
+        "Кажется, я не смогла достаточно точно понять запрос. "
+        "Сформулируй, пожалуйста, что сейчас важнее: "
+        "выговориться, разобраться или получить конкретную помощь?"
+    )
+
+
 async def get_response(
     user_id: int,
     user_message: str,
 ) -> str:
     """
-    Полный цикл:
+    Полный цикл обработки сообщения:
 
-    Router
-    → Conversation Planner
-    → Response Policy
-    → GigaChat
-    → Response Critic
-    → Dialogue Director
-    → при необходимости одно переписывание.
+    1. Router.
+    2. Conversation Planner.
+    3. Response Policy.
+    4. Создание одного черновика.
+    5. Проверка Critic и Director.
+    6. Не более одного переписывания.
+    7. Повторная проверка.
+    8. Безопасный резервный ответ при повторной ошибке.
     """
 
     history = get_history(
@@ -90,16 +216,28 @@ async def get_response(
 
     has_history = bool(history)
 
+    # ---------------------------------------------------------------
+    # Router
+    # ---------------------------------------------------------------
+
     router_result = classify_message(
         text=user_message,
         has_history=has_history,
     )
+
+    # ---------------------------------------------------------------
+    # Conversation Planner
+    # ---------------------------------------------------------------
 
     conversation_plan = build_conversation_plan(
         route=router_result.route,
         user_message=user_message,
         has_history=has_history,
     )
+
+    # ---------------------------------------------------------------
+    # Response Policy
+    # ---------------------------------------------------------------
 
     response_policy = get_response_policy(
         router_result.route
@@ -117,11 +255,17 @@ async def get_response(
         response_policy.mode,
     )
 
+    # Сохраняем сообщение пользователя после получения истории,
+    # чтобы оно не попадало в запрос к модели дважды.
     save_message(
         user_id,
         "user",
         user_message,
     )
+
+    # ---------------------------------------------------------------
+    # Временный кризисный маршрут
+    # ---------------------------------------------------------------
 
     if router_result.route == Route.CRISIS_SIGNAL:
         crisis_response = build_crisis_response()
@@ -133,6 +277,10 @@ async def get_response(
         )
 
         return crisis_response
+
+    # ---------------------------------------------------------------
+    # Простые ответы без GigaChat
+    # ---------------------------------------------------------------
 
     direct_response = get_direct_response(
         router_result=router_result,
@@ -165,6 +313,10 @@ async def get_response(
         else None
     )
 
+    # ---------------------------------------------------------------
+    # Первый и основной запрос к GigaChat
+    # ---------------------------------------------------------------
+
     draft_response = await get_gigachat_response(
         user_message=user_message,
         history=selected_history,
@@ -173,13 +325,17 @@ async def get_response(
         conversation_plan=conversation_plan,
     )
 
-    critic_result = evaluate_response(
+    # ---------------------------------------------------------------
+    # Первая проверка
+    # ---------------------------------------------------------------
+
+    first_critic = evaluate_response(
         response_text=draft_response,
         route=router_result.route,
         policy=response_policy,
     )
 
-    director_result = evaluate_dialogue_direction(
+    first_director = evaluate_dialogue_direction(
         user_message=user_message,
         response_text=draft_response,
         route=router_result.route,
@@ -187,65 +343,106 @@ async def get_response(
         conversation_plan=conversation_plan,
     )
 
-    final_response = draft_response
+    draft_is_valid = (
+        first_critic.passed
+        and first_director.approved
+    )
 
-    if (
-        not critic_result.passed
-        or not director_result.approved
-    ):
+    if draft_is_valid:
+        save_message(
+            user_id,
+            "assistant",
+            draft_response,
+        )
+
+        return draft_response
+
+    logger.info(
+        (
+            "Response needs rewrite: user_id=%s route=%s "
+            "critic=%s director=%s"
+        ),
+        user_id,
+        router_result.route.value,
+        first_critic.violations,
+        first_director.violations,
+    )
+
+    # ---------------------------------------------------------------
+    # Только одна попытка переписывания
+    # ---------------------------------------------------------------
+
+    rewritten_response = await rewrite_gigachat_response(
+        user_message=user_message,
+        draft_response=draft_response,
+        route=router_result.route,
+        response_policy=response_policy,
+        conversation_plan=conversation_plan,
+        critic_violations=first_critic.violations,
+        director_violations=first_director.violations,
+        director_instruction=(
+            first_director.rewrite_instruction
+        ),
+    )
+
+    # ---------------------------------------------------------------
+    # Обязательная повторная проверка
+    # ---------------------------------------------------------------
+
+    second_critic = evaluate_response(
+        response_text=rewritten_response,
+        route=router_result.route,
+        policy=response_policy,
+    )
+
+    second_director = evaluate_dialogue_direction(
+        user_message=user_message,
+        response_text=rewritten_response,
+        route=router_result.route,
+        policy=response_policy,
+        conversation_plan=conversation_plan,
+    )
+
+    rewritten_is_valid = (
+        second_critic.passed
+        and second_director.approved
+    )
+
+    if rewritten_is_valid:
+        final_response = rewritten_response
+
         logger.info(
             (
-                "Response rewrite: user_id=%s route=%s "
-                "plan=%s critic=%s director=%s"
+                "Rewritten response approved: "
+                "user_id=%s route=%s"
             ),
             user_id,
             router_result.route.value,
-            conversation_plan.action,
-            critic_result.violations,
-            director_result.violations,
         )
 
-        final_response = await rewrite_gigachat_response(
-            user_message=user_message,
-            draft_response=draft_response,
-            route=router_result.route,
-            response_policy=response_policy,
-            conversation_plan=conversation_plan,
-            critic_violations=critic_result.violations,
-            director_violations=director_result.violations,
-            director_instruction=(
-                director_result.rewrite_instruction
+    else:
+        # Ключевое изменение:
+        # ответ, который система сама признала плохим,
+        # больше не отправляется пользователю.
+        logger.warning(
+            (
+                "Using safe fallback: user_id=%s route=%s "
+                "critic=%s director=%s"
             ),
+            user_id,
+            router_result.route.value,
+            second_critic.violations,
+            second_director.violations,
         )
 
-        second_critic = evaluate_response(
-            response_text=final_response,
+        final_response = build_safe_fallback(
             route=router_result.route,
-            policy=response_policy,
-        )
-
-        second_director = evaluate_dialogue_direction(
             user_message=user_message,
-            response_text=final_response,
-            route=router_result.route,
-            policy=response_policy,
-            conversation_plan=conversation_plan,
         )
 
-        if (
-            not second_critic.passed
-            or not second_director.approved
-        ):
-            logger.warning(
-                (
-                    "Final violations: user_id=%s route=%s "
-                    "critic=%s director=%s"
-                ),
-                user_id,
-                router_result.route.value,
-                second_critic.violations,
-                second_director.violations,
-            )
+    # ---------------------------------------------------------------
+    # Сохранение только финального ответа
+    # ---------------------------------------------------------------
 
     save_message(
         user_id,
